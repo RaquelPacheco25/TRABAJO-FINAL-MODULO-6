@@ -1,0 +1,558 @@
+---
+title: "TRABAJO FINAL MÓDULO 6"
+author: "Raquel Pacheco"
+date: "2023-10-15"
+output: 
+  html_document:
+    toc: true 
+    toc_depth: 5
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+---
+## **SECCION A**
+Carga a base de datos nacidos vivos y realiza los filtros necesarios para obtener la información considerando la provincia de nacimiento MANABÍ, cuyo código es el número 13. Usa las mismas variables que se utilizaron en los ejercicios de SVM.
+Realiza las transformaciones necesarias y las categorizaciones con el fin de que puedas correr los modelos.
+Selecciona una muestra de entrenamiento del 10% y realiza un SVM directamente usando cross-validation (función tune). Puedes usar los mismos parámetros aprendidos en el curso
+Grafica el performance del modelo y explica cuál sería el mejor modelo seleccionado a partir del cross-validation
+Guarda en un objeto el mejor modelo seleccionado
+
+### Carga de las librerias
+```{r librerias, message=FALSE, warning=FALSE, comment="", echo=TRUE}
+library(foreign)
+library(dplyr)
+library(caret)
+library(ROCR)
+library(ggplot2)
+library(lattice)
+library(e1071)
+library(reshape2)
+library(plotly)
+library(ROSE)
+library(pROC)
+```
+
+### Carga y manipulacion de la base de datos 
+
+```{r basededatos, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+datos<- read.spss("C:\\Users\\CompuStore\\Desktop\\CURSOS\\CIENCIA DE DATOS\\MODULO 6\\MACHINE LEARNING 1\\ENCUESTA NACIDOS VIVOS\\ENV_2017.sav",
+                  use.value.labels = FALSE, to.data.frame = TRUE)
+
+# Depurar la informacion 
+
+table(datos$prov_nac)
+str(datos$prov_nac)
+
+datos$prov_nac<-as.numeric(as.character(datos$prov_nac))
+
+nuevadata<-datos%>%
+  filter(prov_nac==13)%>%
+  select(peso, talla, sem_gest, sexo, edad_mad, con_pren, sabe_leer)%>%
+  filter(peso!=99,
+         talla!=99,
+         sem_gest!=99,
+         sabe_leer!=9,
+         con_pren!=99)%>%
+  mutate(peso=ifelse(peso>2500,1,0),
+         sexo=ifelse(sexo==1,0,1),
+         sabe_leer=ifelse(sabe_leer==1,1,0),
+         con_pren=ifelse(con_pren>=7,1,0),
+         edad2=edad_mad^2)
+
+
+nuevadata$peso<-factor(nuevadata$peso)
+nuevadata<- nuevadata%>%
+  mutate(peso=recode_factor(
+    peso,'0'="no adecuado",
+    '1'="adecuado"))
+table(nuevadata$peso)
+
+# Fijar una semilla 
+
+set.seed(1234)
+```
+
+
+### Crear una muestra de entrenamiento 
+
+```{r muestra, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+  
+
+entrenamiento<-createDataPartition(nuevadata$peso, p=0.1, list = F)
+
+# Realizamos el modelo SVM con la muestra de entrenamiento 
+
+modeloSVM<- svm(peso ~ talla+sem_gest+sexo+edad_mad+
+                  edad2+sabe_leer, data=nuevadata[entrenamiento,], 
+                kernel="linear", cost=10, scale = T, probability=TRUE)
+## ¿Cómo recupero los vectores de soporte?
+
+modeloSVM$index
+
+## ¿Como recuepero el termino independiente?
+
+modeloSVM$rho
+
+## ¿Como recupero coeficientes que usan para multiplicar para cada observacion 
+# y obtener el vector perpendicular al plano 
+
+modeloSVM$coefs
+
+```
+
+El modelo SVM se ajustó con un kernel lineal y un valor de "coste" de 10, y se utiliza para realizar una clasificación binaria entre las clases "no adecuadas" y "adecuadas". El modelo se basa en 439 vectores de soporte, lo que sugiere que podría ser un modelo más complejo. La elección de un kernel lineal indica que el modelo busca un límite de decisión lineal para separar las clases. o".
+
+### Evaluando el modelo para ver cual es el mejor con CROSS-VALIDATION
+
+```{r mejorM, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+  
+ajustados <- predict(modeloSVM, nuevadata[entrenamiento,],
+                     type="prob")
+# Por defecto se clasifica con un corte de 0.5
+
+# Forma larga de matriz de clasificacion 
+# Matriz de confusion 
+
+ct<- table(nuevadata[entrenamiento,]$peso, 
+           ajustados, dnn=c("Actual", "Predicho"))
+diag(prop.table(ct,1))
+sum(diag(prop.table(ct)))
+
+confusionMatrix(nuevadata$peso[entrenamiento],
+                ajustados, dnn=c("Actual", "Predicho"),
+                levels(ajustados)[2])
+plot(modeloSVM, data=nuevadata[entrenamiento,],
+     talla ~ sem_gest)
+```
+
+### Modelo tuneado
+
+```{r Mtuneado, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+modelo_tuneado<-tune(svm, peso~.,
+                     data=nuevadata[entrenamiento,],
+                     ranges= list(cost=c(0.001, 0.01, 0.1, 1,5,10, 50)),
+                     kernel="linear", scale=TRUE, probability=TRUE, )
+summary(modelo_tuneado)
+
+ggplot(data=modelo_tuneado$performances, 
+       aes(x=cost, y=error))+
+  geom_line()+
+  geom_point()+
+  labs(title = "Error de validacion vs Hiperparametro C")+
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+mejor_modelo<- modelo_tuneado$best.model
+summary(mejor_modelo)
+```
+
+El ajuste de hiperparámetros resultó en la selección de cost = 1 como el mejor valor. Este modelo utiliza un kernel lineal y ha identificado 457 vectores de soporte. El problema es de clasificación binaria entre las clases "no adecuado" y "adecuado". La elección de hiperparámetros se basa en el proceso de validación cruzada y la observación de la relación entre el error y el valor de cost.
+
+## **SECCION B**
+- Evalúa integralmente el modelo y explica cada uno de los resultados
+Matriz de clasificación
+Curvas ROC
+Área bajo la curva
+- Determina el punto de corte óptimo del mejor modelo seleccionado y vuelve evaluar integralmente el modelo con el nuevo punto de corte
+MC
+CROC
+AUC
+- Genera un nuevo dataframe con 1 vector fila X kvariables según el modelo y genera el pronóstico para el modelo con punto de corte 0.5 (por defecto) y con punto de corte óptimo seleccionado. Explica los resultados.
+
+### Evaluando integralmente el modelo
+
+```{r Eintegralmente, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+## Vectores de soportes
+
+head(mejor_modelo$index, 100)
+
+plot(mejor_modelo, data=nuevadata[entrenamiento,],
+     talla~sem_gest)
+
+
+## Validando el "mejor modelo" 
+
+ajustados_mejor_modelo <- predict(mejor_modelo, nuevadata[entrenamiento,],
+                                  type="prob", probability = TRUE)
+
+#verificar como captura el modelo 
+
+str(ajustados_mejor_modelo)
+head(attr(ajustados_mejor_modelo, "probabilities"),5)
+
+```
+
+Los resultados muestran las observaciones que se consideran vectores de soporte, un gráfico de dispersión entre dos variables y las probabilidades predichas para las observaciones en el conjunto de datos de entrenamiento. Estas probabilidades se utilizan para la clasificación de las observaciones en las dos clases "adecuado" y "no adecuado". Las probabilidades se basan en el modelo SVM con cost = 1. 
+
+
+```{r Matriz, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+# Matriz de confusion o clasificacion 
+
+# verificar cual es la primera
+# que arroja el modelo tuneado 
+# en base a esto apuntar al vector de probabilidades y realizar puebas correctas
+
+levels(ajustados_mejor_modelo)
+
+table(attr(ajustados_mejor_modelo,"probabilities")[,1]>0.5,
+      nuevadata$peso[entrenamiento])
+
+levels(nuevadata$peso)
+
+confusionMatrix(ajustados_mejor_modelo, nuevadata$peso[entrenamiento],
+                positive = levels(nuevadata$peso)[2])
+
+```
+
+La sensibilidad del 99,26% indica que el modelo es muy bueno identificando casos "adecuados". Esto es crucial si los falsos negativos son costosos o problemáticos en el contexto del problema que estás abordando.Sin embargo es demasiado alto y podriamos sospechar que el modelo puede estar teniendo un problema de sobreajuste. 
+Por otro lado, la especificidad del 21,74% es relativamente baja. Esto significa que el modelo tiene dificultades para distinguir correctamente casos "no adecuados". Podría estar clasificando incorrectamente algunos casos como "adecuados".
+El valor de Kappa es 0,3083, lo que indica una concordancia moderada entre las predicciones del modelo y los valores reales. Esto sugiere que el modelo está haciendo algo más que simplemente predecir la clase mayoritaria.
+La baja especificidad puede ser aceptable dependiendo del contexto. Si los falsos positivos no tienen un costo significativo, entonces puede estar bien. Sin embargo, si clasificar incorrectamente como "adecuado" tiene consecuencias serias, entonces la baja especificidad puede ser preocupante.
+El modelo parece ser muy eficaz en identificar casos "adecuados", pero muestra dificultades en clasificar correctamente casos "no adecuados". Si los falsos positivos no tienen un alto costo, este modelo podría ser bastante útil. Sin embargo, si es crítico reducir los falsos positivos, se podría necesitar una revisión del modelo o se podrían explorar otras técnicas de clasificación. Además, es importante entender el contexto y los riesgos asociados con cada tipo de error (falsos positivos y falsos negativos) para tomar decisiones.
+
+### Analizar las curvas ROC
+
+```{r ROC, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+  
+pred<-prediction(attr(ajustados_mejor_modelo, "probabilities")[,2], 
+                 nuevadata$peso[entrenamiento])
+
+perf<-performance(pred, "tpr", "fpr")
+plot(perf, colorize=T, lty=3)
+abline(0,1, col="black")
+
+```
+
+Como podemos visualizar la curva está tan cerca del eje superior, lo que indica que el valor de la curva ROC es elevado. Un valor de 0.922 en la curva ROC es significativamente alto y sugiere un excelente rendimiento del modelo de clasificación y ydemuestra que el modelo es capaz de realizar una discriminación efectiva entre las clases. 
+
+### Area bajo la curva
+
+```{r Area, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+aucemodelo1<- performance(pred, measure = "auc")
+aucemodelo1<-aucemodelo1@y.values[[1]]
+aucemodelo1
+
+# Sensitividad y especificidad 
+
+plot(performance(pred, measure = "sens",
+                 x.measure = "spec", colorize=T))
+```
+
+
+Un AUC-ROC de 0.8548 sugiere que el modelo de clasificación tiene un buen rendimiento en la tarea de discriminación entre las clases positiva y negativa. Cuanto más cerca a 1 sea el valor del AUC-ROC, mejor será el rendimiento del modelo.
+
+
+### Otra forma
+
+```{r otra, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+## otro enfoque para el cut-off
+## determinar el cut-off que maximiza el acurracy de mi modelo 
+
+max.acurracy<-performance(pred, measure = "acc")
+plot(max.acurracy)
+
+indice<-which.max(slot(max.acurracy, "y.values")[[1]])
+acc<-slot(max.acurracy, "y.values")[[1]][indice]
+cutoff<-slot(max.acurracy, "x.values")[[1]][indice]
+print(c(accuracy=acc, 
+        cutoff=cutoff))
+
+# Otro enfoque 
+library(pROC)
+
+prediccionescutoff<-attr(ajustados_mejor_modelo, "probabilities")[,1]
+
+curvaROC<-plot.roc(nuevadata$peso[entrenamiento],
+                   as.vector(prediccionescutoff),
+                   precent=TRUE, ci=TRUE, print.auc=TRUE,
+                   threholds="best",
+                   print.thres="best")
+```
+
+
+### Punto de corte óptimo
+
+```{r optimo, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+# Enfoque maximizacion sensitividad y especificidad 
+
+perf1<- performance(pred, "sens", "spec")
+sen<- slot(perf1, "y.values"[[1]])
+esp<-slot(perf1, "x.values"[[1]])
+alf<-slot(perf1, "alpha.values"[[1]])
+mat<-data.frame(alf,sen,esp)
+
+names(mat)[1]<-"alf"
+names(mat)[2]<-"sen"
+names(mat)[3]<-"esp"
+library(reshape2)
+library(ggplot2)
+
+m<-melt(mat, id=c("alf"))
+
+p1<- ggplot(m, aes(alf, value, group=variable, colour=variable))+
+  geom_line(size=1.2)+
+  labs(title = "punto de corte para svm",
+       x="cut-off", y="")
+p1
+```
+
+### Volvemos a general la Matriz de confusion y la curva ROC con el corte óptimo
+
+```{r Matriz2, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+# Evaluando punto de corte sugerido 
+# Definamos el punto de corte
+
+umbral<-as.numeric(cutoff)
+umbral
+
+table(attr(ajustados_mejor_modelo,"probabilities")[,1]>umbral,
+      nuevadata$peso[entrenamiento])
+
+# Echar un vistazo de las probabilidades devueltas
+
+head(attr(ajustados_mejor_modelo, "probabilities"))
+
+# Seleccionamos la probabilidad objetivo 
+
+prediccionescutoff<-attr(ajustados_mejor_modelo, "probabilities")[,1]
+prediccionescutoff<-as.numeric(prediccionescutoff)
+
+
+predCut<-factor(ifelse(prediccionescutoff>umbral,1,0))
+
+matrizpuntocorte<- data.frame(real=nuevadata$peso[entrenamiento],
+                              predicho=predCut)
+
+matrizpuntocorte<-matrizpuntocorte%>%
+  mutate(predicho=recode_factor(predicho,'0'="no adecuado",
+                                '1'="adecuado"))
+
+# Calcula la matriz de confusión
+confusionMatrix(matrizpuntocorte$predicho, matrizpuntocorte$real, positive = "adecuado")
+
+
+# Curva ROC Y AUC con punto optimo
+
+curvaROC<-plot.roc(nuevadata$peso[entrenamiento],
+                   as.vector(prediccionescutoff),
+                   precent=TRUE, ci=TRUE, print.auc=TRUE,
+                   threholds="best",
+                   print.thres="best")
+
+
+
+```
+
+Observamos que apesar de que estamos utilizando el punto optimo pues la matriz de confusion es la misma y obtenemos practicamente los mismos resultados, lo que indica que no existe mayor variacion con los anteriores resultados. 
+
+### Pronostico
+
+```{r pronostico, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+## Prediciendo con SVM
+
+newdata<-head(nuevadata,5)
+str(newdata)
+
+# Predecir dentro de la muestra
+#Considerar que para la prediccion el punto de corte por defecto es 0,5
+
+predict(mejor_modelo,newdata)
+pronostico1<-predict(mejor_modelo, newdata)
+pronostico1
+
+p.probabilidades<-predict(mejor_modelo, newdata, probability = TRUE)
+p.probabilidades
+
+
+## Pronostico fuera de la muestra
+
+newdata2<-data.frame(
+  talla=45,
+  sem_gest=38,
+  sexo=1,
+  edad_mad=30,
+  sabe_leer=1,
+  con_pren=1,
+  edad2=90)
+
+pronostico2<-predict(mejor_modelo, newdata2, probability = TRUE)
+pronostico2
+
+predict(mejor_modelo, newdata2)
+
+```
+
+El modelo SVM ha realizado predicciones para cinco nuevos casos. En cada uno de estos casos (del 1 al 5), el modelo predice que el peso del niño es "adecuado". No se predice "no adecuado" en ninguno de los casos.
+
+Las probabilidades indican cuánto confía el modelo en su predicción. En todos los casos (1 al 5), el modelo está muy seguro de su predicción "adecuada". Las probabilidades para "adecuado" son altas, alrededor del 96-98%, mientras que las probabilidades para "no adecuado" son bajas, alrededor del 1-4%.
+
+El modelo hizo una sola predicción para estos datos y también predijo que el peso del niño es "adecuado". Nuevamente, no se predice "no adecuado".En todos los casos, el modelo ha predicho "adecuado" y ha demostrado un alto grado de confianza en estas predicciones. Las probabilidades asociadas respaldan la seguridad del modelo en sus predicciones. No se ha predicho "no adecuado" en ninguno de los casos. Esto sugiere que el modelo considera que los pesos de los niños en estos casos son "adecuados" según las características proporcionadas.
+
+## **SECCIÓN C**
+
+Realiza un remuestreo usando la metodología ROSE y construye un SVM usando cross-validation.
+Evalúa integralmente el modelo con data remuestreada y explica los resultados
+MC
+CROC
+AUC
+En un solo gráfico, une las curvas ROC del: modelo tuneado sin remuestreo, modelo remuestreado con ROSE
+Genera un pronóstico con un vector fila X Kvariables según el modelo y produce el pronóstico para el con un punto de corte óptimo, el cual debe ser seleccionado previamente
+En un dataframe, une los siguientes resultados: Pronóstico del modelo tuneado sin remuestreo y con punto de corte óptimo; pronóstico del modelo con remuestreo y con punto de corte óptimo seleccionado.
+Finalmente, explica tus conclusiones en base a lo que los criterios de evaluación te proporcionaron, específicamente sobre la matriz de clasificación y sobre las curvas ROC
+
+```{r remuestreo, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+train_data<- nuevadata[entrenamiento,]
+table(train_data$peso)
+
+## ROSE:metodo sintético para completar la informacion mediante una densidad de kernel
+
+# se supone que es el metodo mas robusto
+
+roses<- ROSE(peso~.,
+             data=train_data,
+             seed = 1)$data
+
+table(roses$peso)
+
+# Desbalance muestral MODELO ROSE
+
+modelo.rose<-tune(svm, peso~.,
+                  data=roses, 
+                  ranges= list(cost=c(0.001, 0.01, 0.1, 1,5,10, 50)),
+                  kernel="linear", scale=TRUE, probability=TRUE)
+summary(modelo.rose)
+mejor.modelo.rose<- modelo.rose$best.model
+
+### Evaluacion del modelo re muestreo 
+
+ajustadosrose<- predict(mejor.modelo.rose, 
+                        roses, 
+                        type="prob",
+                        probability = T)
+```
+
+### Matriz de confusion ROSE VS ORIGINAL
+
+```{r rose, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+# Matriz Rose
+
+confusionMatrix(roses$peso, ajustadosrose, 
+                dnn=c("Actuales", "Predichos"),
+                levels(ajustadosrose)[1])
+
+# Matriz original 
+
+confusionMatrix(ajustados_mejor_modelo,nuevadata$peso[entrenamiento], 
+                positive=levels(nuevadata$peso)[2])
+
+```
+
+El modelo con balanceo aplicando ROSE logra un equilibrio mejor entre la sensibilidad y la especificidad. Mientras que el modelo sin balanceo tiene una alta sensibilidad para "adecuado", esto se logra a costa de una especificidad muy baja, lo que indica un alto riesgo de falsos positivos.
+
+El modelo con balanceo tiene una precisión (Accuracy) ligeramente menor en comparación con el modelo sin balanceo. Sin embargo, la precisión es un indicador general del rendimiento del modelo, observamos que al ya estar balanceados los datos pues igual no es un valor tan bajo, por lo que este modelo seria mejor que el anterior. 
+
+### Curva ROC
+
+```{r ROCbalanceado, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+roc.curve(roses$peso, 
+          attr(ajustadosrose, 
+               "probabilities")[,2],
+          col="green")
+
+roc.curve(nuevadata$peso[entrenamiento], 
+          attr(ajustados_mejor_modelo, 
+               "probabilities")[,2],
+          col="pink", add.roc = T)
+
+
+```
+
+### Pronostico con ROSE
+
+```{r pronosticoRose, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+## Pronostico 
+
+newdata3<-data.frame(
+  talla=58,
+  sem_gest=22,
+  sexo=2,
+  edad_mad=35,
+  sabe_leer=1,
+  con_pren=1,
+  edad2=70)
+
+pronostico3<-predict(mejor.modelo.rose, newdata3, probability = TRUE)
+pronostico3
+
+```
+
+### Pronostico Unido
+
+```{r pronosticoFINAL, message=TRUE, warning=FALSE, comment="", echo=TRUE}
+
+### DATAFRAME Pronostico 
+
+finalpronostico<- data.frame(pronostico2, pronostico3)
+finalpronostico
+
+```
+
+### CONCLUSIONES
+
+La metodología ROSE, que busca equilibrar los datos, ha demostrado mejorar la especificidad del modelo sin afectar significativamente la sensibilidad. Esto significa que el modelo con balanceo es capaz de predecir correctamente más casos "no adecuados" sin sacrificar la capacidad de identificar casos "adecuados". 
+
+Matriz de Clasificación - Modelo ROSE vs. Modelo Tuneado
+
+Modelo ROSE :
+
+Sensibilidad: 73,49%
+
+Especificidad: 74,98%
+
+Precisión (Exactitud): 74,15%
+
+AUC-ROC: Por encima de 0.74
+
+Modelo Tuneado :
+
+Sensibilidad: 99,26%
+
+Especificidad: 21,74%
+
+Precisión (Exactitud): 91,83%
+
+AUC-ROC: 0,85
+
+El modelo ROSE ha mejorado significativamente la especificidad en comparación con el modelo original, lo que lo hace más adecuado para detectar casos "no adecuados". Sin embargo, esto también resulta en una ligera disminución en la precisión global.
+
+Curvas ROC - Modelo ROSE vs. Modelo Original
+
+En un gráfico que combina ambas curvas ROC, se observa que el modelo ROSE tiene un AUC-ROC ligeramente menor que el modelo original. A pesar de esta diferencia, ambas curvas están relativamente cerca y sugieren que ambos modelos tienen un buen rendimiento en la discriminación de las clases.
+
+Pronóstico con Punto de Corte Óptimo
+
+Ambos modelos (ROSE y Original) utilizan el mismo punto de corte óptimo (seleccionado previamente), lo que permite comparar sus resultados de pronóstico en las mismas condiciones. Este punto de corte óptimo se desarrolló en aproximadamente 0.4857.
+
+Resultados del pronóstico
+
+El pronóstico de ambos modelos para los datos de prueba es que todos los casos son "adecuados". Esto sugiere que, independientemente del enfoque de balanceo, ambos modelos predicen que los pesos de los niños en estos casos son "adecuados".
+
+Conclusiones Finales
+
+- La metodología ROSE mejora la especificidad del modelo sin afectar significativamente la sensibilidad. Esto es beneficioso si se busca detectar casos "no adecuados" de manera más precisa.
+Ambos modelos tienen un rendimiento similar en la discriminación de las clases, como se refleja en las curvas ROC y el AUC-ROC.
+
+- Los modelos predicen de manera consistente que los casos de prueba son "adecuados". Esto puede deberse a la influencia del punto de corte óptimo en la clasificación.
+
+- La elección entre el modelo ROSE y el modelo original dependerá de las necesidades específicas del problema. Si se prioriza la identificación precisa de casos "no adecuados", el modelo ROSE puede ser más adecuado.
